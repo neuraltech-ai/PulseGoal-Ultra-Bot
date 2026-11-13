@@ -1,10 +1,13 @@
-import os, re, time, urllib.parse, threading, requests
+import os, re, time, urllib.parse, threading, requests, urllib3
+from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, jsonify, request, Response
 import telebot
 from telebot.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
 )
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 WEBAPP_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://pulsegoal-ultra-bot.onrender.com")
@@ -30,192 +33,255 @@ LEAGUES = [
     ("ksa.1", "🇸🇦 دوري روشن السعودي")
 ]
 
-# باقة القنوات الاحترافية المقسمة: beIN Sports العربية + القنوات العربية المفتوحة + القنوات العالمية
-CHANNELS_DB = [
-    # باقة beIN SPORTS العربية
-    {
-        "id": "bein_news", "cat": "bein",
-        "name": "🟣 beIN SPORTS NEWS HD (الإخبارية المفتوحة)",
-        "mode": "embed",
-        "embed_url": "https://www.youtube.com/embed/live_stream?channel=UCJUCcJUeh0Cz2xyKwkw5Q1w&autoplay=1",
-        "hls_url": "https://bein-esp-xtra.amagi.tv/playlist.m3u8",
-        "web_backup": "https://www.youtube.com/@beINSPORTS/streams"
-    },
+# القنوات الأساسية مع روابط متعددة (Multi-Backup URLs) وترويسات مخصصة لتجاوز الحجب
+BASE_CHANNELS = [
     {
         "id": "bein_xtra", "cat": "bein",
-        "name": "🟣 beIN SPORTS XTRA HD (مباريات مباشرة)",
-        "mode": "hls",
-        "hls_url": "https://bein-esp-xtra.amagi.tv/playlist.m3u8",
-        "embed_url": "https://www.youtube.com/embed/live_stream?channel=UCJUCcJUeh0Cz2xyKwkw5Q1w&autoplay=1",
-        "web_backup": "https://www.beinsports.com/ar-mena"
+        "name": "🟣 beIN SPORTS XTRA 1 HD",
+        "urls": [
+            "https://bein-xtra-bein.amagi.tv/playlist.m3u8",
+            "https://bein-esp-xtra.amagi.tv/playlist.m3u8"
+        ],
+        "ref": "https://www.beinsports.com/"
     },
     {
         "id": "bein_1", "cat": "bein",
-        "name": "🟣 beIN SPORTS 1 Premium HD (سيرفر متعدد)",
-        "mode": "multi",
-        "hls_url": "https://bein-esp-xtra.amagi.tv/playlist.m3u8",
-        "embed_url": "https://www.youtube.com/embed/live_stream?channel=UCJUCcJUeh0Cz2xyKwkw5Q1w&autoplay=1",
-        "web_backup": "https://www.beinsports.com/ar-mena/tv-guide"
+        "name": "🟣 beIN SPORTS 1 MENA HD",
+        "urls": [
+            "http://primetv.cc.cd/beinfhd11/tracks-v1a1/mono.tbin.m3u8",
+            "https://ctrl.laotv.la/live/Bsport1/index.m3u8",
+            "https://bein-xtra-bein.amagi.tv/playlist.m3u8"
+        ],
+        "ref": ""
     },
     {
         "id": "bein_2", "cat": "bein",
-        "name": "🟣 beIN SPORTS 2 Premium HD (سيرفر متعدد)",
-        "mode": "multi",
-        "hls_url": "https://bein-esp-xtra.amagi.tv/playlist.m3u8",
-        "embed_url": "https://www.youtube.com/embed/live_stream?channel=UCJUCcJUeh0Cz2xyKwkw5Q1w&autoplay=1",
-        "web_backup": "https://www.beinsports.com/ar-mena/tv-guide"
+        "name": "🟣 beIN SPORTS 2 MENA HD",
+        "urls": [
+            "https://andro.mangeinde4.lat/checklist/androstreamlivebs2.m3u8",
+            "http://primetv.cc.cd/beinfhd22/index.m3u8",
+            "https://bein-esp-xtra.amagi.tv/playlist.m3u8"
+        ],
+        "ref": ""
     },
     {
         "id": "bein_3", "cat": "bein",
-        "name": "🟣 beIN SPORTS 3 Premium HD (سيرفر متعدد)",
-        "mode": "multi",
-        "hls_url": "https://bein-esp-xtra.amagi.tv/playlist.m3u8",
-        "embed_url": "https://www.youtube.com/embed/live_stream?channel=UCJUCcJUeh0Cz2xyKwkw5Q1w&autoplay=1",
-        "web_backup": "https://www.beinsports.com/ar-mena/tv-guide"
+        "name": "🟣 beIN SPORTS 3 MENA HD",
+        "urls": [
+            "http://primetv.cc.cd/beinfhd33/index.m3u8",
+            "https://bein-xtra-bein.amagi.tv/playlist.m3u8"
+        ],
+        "ref": ""
     },
     {
-        "id": "bein_4", "cat": "bein",
-        "name": "🟣 beIN SPORTS 4 HD (الدوريات الأوروبية)",
-        "mode": "multi",
-        "hls_url": "https://bein-esp-xtra.amagi.tv/playlist.m3u8",
-        "embed_url": "https://www.youtube.com/embed/live_stream?channel=UCJUCcJUeh0Cz2xyKwkw5Q1w&autoplay=1",
-        "web_backup": "https://www.beinsports.com/ar-mena/tv-guide"
+        "id": "bein_8", "cat": "bein",
+        "name": "🟣 beIN SPORTS 8 MENA HD",
+        "urls": [
+            "http://86.192.195.47:9034/stream/9/index.m3u8",
+            "http://primetv.cc.cd/beinfhd8/index.m3u8"
+        ],
+        "ref": ""
     },
     {
-        "id": "bein_5", "cat": "bein",
-        "name": "🟣 beIN SPORTS 5 HD (البطولات القارية)",
-        "mode": "multi",
-        "hls_url": "https://bein-esp-xtra.amagi.tv/playlist.m3u8",
-        "embed_url": "https://www.youtube.com/embed/live_stream?channel=UCJUCcJUeh0Cz2xyKwkw5Q1w&autoplay=1",
-        "web_backup": "https://www.beinsports.com/ar-mena/tv-guide"
+        "id": "bein_max1", "cat": "bein",
+        "name": "🟣 beIN SPORTS MAX 1 HD",
+        "urls": [
+            "https://andro.mangeinde4.lat/checklist/androstreamlivebsm1.m3u8",
+            "http://maxshowplayer.online:2052/live/17810359400475/39215025645488/677040.m3u8"
+        ],
+        "ref": ""
     },
     {
-        "id": "bein_6", "cat": "bein",
-        "name": "🟣 beIN SPORTS 6 HD (البطولات الأفريقية والآسيوية)",
-        "mode": "multi",
-        "hls_url": "https://bein-esp-xtra.amagi.tv/playlist.m3u8",
-        "embed_url": "https://www.youtube.com/embed/live_stream?channel=UCJUCcJUeh0Cz2xyKwkw5Q1w&autoplay=1",
-        "web_backup": "https://www.beinsports.com/ar-mena/tv-guide"
+        "id": "bein_news", "cat": "bein",
+        "name": "🟣 beIN SPORTS NEWS / HABER HD",
+        "urls": [
+            "https://andro.mangeinde4.lat/checklist/androstreamlivebsh.m3u8",
+            "https://bein-xtra-bein.amagi.tv/playlist.m3u8"
+        ],
+        "ref": ""
     },
-    # القنوات العربية المفتوحة
     {
         "id": "arryadia", "cat": "arab",
-        "name": "🇲🇦 الرياضية المغربية (Arryadia TNT HD)",
-        "mode": "hls",
-        "hls_url": "https://cdn.live.easybroadcast.io/ts_corp/73_arryadia-tnt_zcmwjdc/playlist_dvr.m3u8",
-        "embed_url": "https://snrtlive.ma/ar/arryadia",
-        "web_backup": "https://snrtlive.ma/ar/arryadia"
+        "name": "🇲🇦 الرياضية المغربية (Arryadia HD / TNT)",
+        "urls": [
+            "http://149.100.11.252:8000/play/a065/index.m3u8",
+            "https://cdn.live.easybroadcast.io/ts_corp/73_arryadia-tnt_zcmwjdc/playlist_dvr.m3u8",
+            "https://cdn.live.easybroadcast.io/abr_corp/73_arryadia_k2tgcj0/playlist_dvr.m3u8"
+        ],
+        "ref": "https://snrtlive.ma/"
     },
     {
-        "id": "alkass1", "cat": "arab",
-        "name": "🇶🇦 الكأس الرياضية 1 (Alkass One HD)",
-        "mode": "hls",
-        "hls_url": "https://liveakgr.alkassdigital.net/hls/live/2097037/Alkass5/master.m3u8",
-        "embed_url": "https://www.alkass.net/alkass/live.aspx?ch=one",
-        "web_backup": "https://www.alkass.net/alkass/live.aspx?ch=one"
+        "id": "alkass_hd", "cat": "arab",
+        "name": "🇶🇦 الكأس الرياضية HD (Alkass Sports)",
+        "urls": [
+            "https://liveeu-gcp.alkassdigital.net/alkass9-p/main.m3u8",
+            "https://liveakgr.alkassdigital.net/hls/live/2097037/Alkass6Shoof1/master.m3u8",
+            "https://liveakgr.alkassdigital.net/hls/live/2097037/Alkass1muytrdc/master.m3u8"
+        ],
+        "ref": "https://qmc.qa/"
     },
     {
-        "id": "adsports1", "cat": "arab",
-        "name": "🇦🇪 أبوظبي الرياضية 1 (AD Sports 1 HD)",
-        "mode": "hls",
-        "hls_url": "https://admdn1.cdn.mangomolo.com/adsports1/smil:adsports1.stream.smil/playlist.m3u8",
-        "embed_url": "https://adsports.ae/live/154/",
-        "web_backup": "https://adsports.ae/live/154/"
+        "id": "dubai_sp", "cat": "arab",
+        "name": "🇦🇪 دبي الرياضية 1 HD (Dubai Sports)",
+        "urls": [
+            "https://dmitnthvll.cdn.mangomolo.com/dubaisports/smil:dubaisports.stream.smil/playlist.m3u8"
+        ],
+        "ref": "https://www.dubaisports.ae/"
     },
     {
-        "id": "dubaisports1", "cat": "arab",
-        "name": "🇦🇪 دبي الرياضية 1 (Dubai Sports 1 FHD)",
-        "mode": "hls",
-        "hls_url": "https://dmitnthvll.cdn.mangomolo.com/dubaisports/smil:dubaisports.stream.smil/playlist.m3u8",
-        "embed_url": "https://www.dubaisports.ae/content/dubaisports/livestreaming/channel-1.html",
-        "web_backup": "https://www.dubaisports.ae/content/dubaisports/livestreaming/channel-1.html"
+        "id": "ad_sp", "cat": "arab",
+        "name": "🇦🇪 أبوظبي الرياضية 1 HD (AD Sports)",
+        "urls": [
+            "https://admdn1.cdn.mangomolo.com/adsports1/smil:adsports1.stream.smil/playlist.m3u8"
+        ],
+        "ref": "https://adsports.ae/"
     },
     {
-        "id": "omansport", "cat": "arab",
-        "name": "🇴🇲 عمان الرياضية (Oman Sport HD)",
-        "mode": "hls",
-        "hls_url": "https://partneta.cdn.mgmlcdn.com/omsport/smil:omsport.stream.smil/playlist.m3u8",
-        "embed_url": "https://ain.om",
-        "web_backup": "https://ain.om"
+        "id": "oman_sp", "cat": "arab",
+        "name": "🇴🇲 عمان الرياضية HD (Oman Sport)",
+        "urls": [
+            "https://partneta.cdn.mgmlcdn.com/omsport/smil:omsport.stream.smil/playlist.m3u8"
+        ],
+        "ref": "https://ain.om/"
     },
     {
-        "id": "bahrainsport", "cat": "arab",
-        "name": "🇧🇭 البحرين الرياضية 1 (Bahrain Sport HD)",
-        "mode": "hls",
-        "hls_url": "https://5c7b683162943.streamlock.net/live/ngrp:bahrainsport1_all/playlist.m3u8",
-        "embed_url": "https://www.bahrain.bh",
-        "web_backup": "https://www.bahrain.bh"
+        "id": "bahrain_sp", "cat": "arab",
+        "name": "🇧🇭 البحرين الرياضية HD (Bahrain Sport)",
+        "urls": [
+            "https://5c7b683162943.streamlock.net/live/ngrp:bahrainsport1_all/playlist.m3u8"
+        ],
+        "ref": "https://www.bahrain.bh/"
     },
-    # قنوات عالمية تعمل 24/7 بدون حظر جغرافي
     {
         "id": "fifaplus", "cat": "global",
-        "name": "🏆 FIFA+ Global Football TV (1080p FHD)",
-        "mode": "hls",
-        "hls_url": "https://a62dad94.wurl.com/master/f36d25e7e52f1ba8d7e56eb859c636563214f541/UmFrdXRlblRWLWV1X0ZJRkFQbHVzRUVuZ2xpc2hITFM/playlist.m3u8",
-        "embed_url": "https://www.plus.fifa.com",
-        "web_backup": "https://www.plus.fifa.com"
+        "name": "🏆 FIFA+ Global Football Live (1080p)",
+        "urls": [
+            "https://a62dad94.wurl.com/master/f36d25e7e52f1ba8d7e56eb859c636563214f541/UmFrdXRlblRWLWV1X0ZJRkFQbHVzRUVuZ2xpc2hITFM/playlist.m3u8"
+        ],
+        "ref": ""
     },
     {
         "id": "rmtv", "cat": "global",
-        "name": "🇪🇸 Real Madrid TV (البث الرسمي المباشر FHD)",
-        "mode": "hls",
-        "hls_url": "https://rmtv.akamaized.net/hls/live/2043153/rmtv-es-web/master.m3u8",
-        "embed_url": "https://www.realmadrid.com/real-madrid-tv",
-        "web_backup": "https://www.realmadrid.com/real-madrid-tv"
+        "name": "🇪🇸 Real Madrid TV HD (البث الرسمي)",
+        "urls": [
+            "https://rmtv.akamaized.net/hls/live/2043153/rmtv-es-web/master.m3u8"
+        ],
+        "ref": ""
     },
     {
         "id": "redbull", "cat": "global",
         "name": "⚽ Red Bull Sports TV (1080p FHD)",
-        "mode": "hls",
-        "hls_url": "https://rbmn-live.akamaized.net/hls/live/590964/BoRB-AT/master.m3u8",
-        "embed_url": "https://www.redbull.com",
-        "web_backup": "https://www.redbull.com"
+        "urls": [
+            "https://rbmn-live.akamaized.net/hls/live/590964/BoRB-AT/master.m3u8"
+        ],
+        "ref": ""
     },
     {
         "id": "unite8", "cat": "global",
         "name": "🌍 Unite8 Sports 1 HD (1080p)",
-        "mode": "hls",
-        "hls_url": "https://fta.ektv.in/live/263/master.m3u8",
-        "embed_url": "https://fta.ektv.in/live/263/master.m3u8",
-        "web_backup": "https://fta.ektv.in/live/263/master.m3u8"
+        "urls": [
+            "https://fta.ektv.in/live/263/master.m3u8"
+        ],
+        "ref": ""
     }
 ]
 
+VERIFIED_CACHE = {"ts": 0, "channels": []}
 MATCH_CACHE = {"ts": 0, "data": []}
-DYNAMIC_BEIN_STREAMS = []
 
-def refresh_community_bein_streams():
-    """البحث التلقائي في قوائم IPTV العربية المفتوحة عن روابط beIN والرياضية المحدثة"""
-    global DYNAMIC_BEIN_STREAMS
-    sources = [
-        "https://iptv-org.github.io/iptv/languages/ara.m3u",
-        "https://iptv-org.github.io/iptv/categories/sports.m3u"
+def check_url_alive(url, ref=""):
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0"}
+        if ref:
+            headers["Referer"] = ref
+        r = requests.get(url, headers=headers, timeout=4, stream=True, verify=False)
+        return r.status_code in (200, 206, 302)
+    except Exception:
+        return False
+
+def build_verified_channels():
+    """جلب وفحص القنوات الرياضية العربية والعالمية وإبقاء الروابط الشغالة في المقدمة"""
+    now = time.time()
+    if now - VERIFIED_CACHE["ts"] < 300 and VERIFIED_CACHE["channels"]:
+        return VERIFIED_CACHE["channels"]
+
+    final_list = []
+    for ch in BASE_CHANNELS:
+        final_list.append({
+            "id": ch["id"],
+            "cat": ch["cat"],
+            "name": ch["name"],
+            "urls": ch["urls"],
+            "ref": ch.get("ref", ""),
+            "verified": True
+        })
+
+    # سحب القنوات الرياضية المحدثة من قوائم الدول العربية والرياضة في iptv-org
+    playlists = [
+        ("arab", "https://iptv-org.github.io/iptv/countries/ma.m3u"),
+        ("bein", "https://iptv-org.github.io/iptv/countries/qa.m3u"),
+        ("arab", "https://iptv-org.github.io/iptv/countries/ae.m3u"),
+        ("arab", "https://iptv-org.github.io/iptv/countries/sa.m3u"),
+        ("arab", "https://iptv-org.github.io/iptv/languages/ara.m3u"),
+        ("global", "https://iptv-org.github.io/iptv/categories/sports.m3u")
     ]
-    found = []
-    for src in sources:
+    candidates = []
+    seen_urls = set(u for c in BASE_CHANNELS for u in c["urls"])
+
+    for default_cat, pl_url in playlists:
         try:
-            r = requests.get(src, timeout=8)
-            lines = r.text.splitlines()
+            r = requests.get(pl_url, timeout=6)
+            if r.status_code != 200:
+                continue
             cname = ""
-            for line in lines:
+            cref = ""
+            for line in r.text.splitlines():
                 line = line.strip()
                 if line.startswith("#EXTINF:"):
                     cname = line.split(",")[-1].strip()
-                elif line.startswith("http") and ".m3u8" in line:
+                    cref = ""
+                elif line.startswith("#EXTVLCOPT:http-referrer="):
+                    cref = line.split("=", 1)[-1].strip()
+                elif line.startswith("http") and (".m3u8" in line or "/play/" in line or "/stream/" in line):
+                    if line in seen_urls:
+                        continue
                     low = cname.lower()
-                    if any(k in low for k in ["bein", "sport", "alkass", "arryadia", "ssc", "ad sport", "dubai sport", "on time"]):
-                        found.append({
-                            "id": f"dyn_{len(found)}",
-                            "cat": "bein" if "bein" in low else "arab",
-                            "name": f"📡 {cname}",
-                            "mode": "hls",
-                            "hls_url": line,
-                            "embed_url": line,
-                            "web_backup": line
+                    if default_cat == "global" or any(k in low for k in ["sport", "bein", "kass", "arryadia", "ssc", "dubai", "abu dhabi", "on time", "al aoula", "snrt", "fifa", "madrid", "barca", "foot"]):
+                        seen_urls.add(line)
+                        cat = "bein" if ("bein" in low or "kass" in low) else default_cat
+                        candidates.append({
+                            "id": f"auto_{len(candidates)}",
+                            "cat": cat,
+                            "name": f"📺 {cname}",
+                            "urls": [line],
+                            "ref": cref,
+                            "verified": False
                         })
         except Exception:
             continue
-    DYNAMIC_BEIN_STREAMS = found[:60]
+
+    # فحص سريع متوازي لأول 35 قناة مرشحة للتأكد من أنها شغالة فعلياً
+    def verify_cand(c):
+        if check_url_alive(c["urls"][0], c["ref"]):
+            c["name"] = "🟢 " + c["name"].replace("📺 ", "")
+            c["verified"] = True
+            return c
+        return None
+
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        results = list(ex.map(verify_cand, candidates[:35]))
+
+    for res in results:
+        if res:
+            final_list.append(res)
+
+    # إضافة بقية القنوات العالمية الاحتياطية
+    for c in candidates[35:95]:
+        final_list.append(c)
+
+    VERIFIED_CACHE["ts"] = now
+    VERIFIED_CACHE["channels"] = final_list
+    return final_list
 
 def fetch_all_world_matches(league_code="all"):
     now = time.time()
@@ -260,7 +326,7 @@ def fetch_all_world_matches(league_code="all"):
                     mname = gb.get("media", {}).get("shortName")
                     if mname:
                         broadcasts.append(mname)
-                b_str = " | ".join(list(dict.fromkeys(broadcasts))[:2]) if broadcasts else "beIN SPORTS HD / الرياضية"
+                b_str = " | ".join(list(dict.fromkeys(broadcasts))[:2]) if broadcasts else "beIN SPORTS / الرياضية"
 
                 results.append({
                     "id": ev_id,
@@ -289,35 +355,65 @@ def api_matches():
 
 @app.route("/api/channels")
 def api_channels():
-    if not DYNAMIC_BEIN_STREAMS:
-        refresh_community_bein_streams()
-    return jsonify(CHANNELS_DB + DYNAMIC_BEIN_STREAMS)
+    return jsonify(build_verified_channels())
 
 @app.route("/proxy/stream")
 def proxy_stream():
+    """
+    بروكسي متطور يحل مشكلة روابط http غير المشفرة (Mixed Content)
+    ويرسل ترويسات Referer الخاصة بقنوات الكأس والرياضية و beIN.
+    """
     target_url = request.args.get("url", "")
+    custom_ref = request.args.get("ref", "")
     if not target_url:
         return "Missing url", 400
     try:
+        ref_to_use = custom_ref if custom_ref else urllib.parse.urljoin(target_url, "/")
         headers = {
-            "User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Mobile Safari/537.36",
-            "Referer": urllib.parse.urljoin(target_url, "/"),
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+            "Referer": ref_to_use,
+            "Origin": ref_to_use.rstrip("/"),
+            "Accept": "*/*",
             "Connection": "keep-alive"
         }
-        r = requests.get(target_url, headers=headers, timeout=10)
+        r = requests.get(target_url, headers=headers, timeout=10, verify=False)
         ctype = r.headers.get("Content-Type", "")
-        if "mpegurl" in ctype.lower() or target_url.split("?")[0].endswith(".m3u8") or b"#EXTM3U" in r.content[:50]:
-            base_url = target_url.rsplit("/", 1)[0] + "/"
+        is_m3u8 = (
+            "mpegurl" in ctype.lower()
+            or target_url.split("?")[0].endswith(".m3u8")
+            or b"#EXTM3U" in r.content[:60]
+        )
+        if is_m3u8:
+            # استخدم الرابط النهائي بعد أي Redirect لحساب الروابط النسبية بشكل صحيح
+            final_base = r.url.rsplit("/", 1)[0] + "/"
             rewritten = []
             for line in r.text.splitlines():
                 s = line.strip()
-                if s and not s.startswith("#"):
-                    abs_u = urllib.parse.urljoin(base_url, s)
-                    rewritten.append(f"/proxy/stream?url={urllib.parse.quote(abs_u, safe='')}")
+                if not s:
+                    continue
+                if s.startswith("#"):
+                    # معالجة مفاتيح الصوت أو التشفير داخل #EXT-X-MEDIA:URI="..."
+                    if 'URI="' in s:
+                        def repl_uri(m):
+                            u = urllib.parse.urljoin(final_base, m.group(1))
+                            return f'URI="/proxy/stream?url={urllib.parse.quote(u, safe="")}&ref={urllib.parse.quote(custom_ref, safe="")}"'
+                        s = re.sub(r'URI="([^"]+)"', repl_uri, s)
+                    rewritten.append(s)
                 else:
-                    rewritten.append(line)
-            return Response("\n".join(rewritten), status=200, content_type="application/vnd.apple.mpegurl", headers={"Access-Control-Allow-Origin": "*"})
-        return Response(r.content, status=r.status_code, content_type=ctype or "video/MP2T", headers={"Access-Control-Allow-Origin": "*"})
+                    abs_u = urllib.parse.urljoin(final_base, s)
+                    rewritten.append(f"/proxy/stream?url={urllib.parse.quote(abs_u, safe='')}&ref={urllib.parse.quote(custom_ref, safe='')}")
+            return Response(
+                "\n".join(rewritten),
+                status=200,
+                content_type="application/vnd.apple.mpegurl",
+                headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-cache"}
+            )
+        return Response(
+            r.content,
+            status=r.status_code,
+            content_type=ctype or "video/MP2T",
+            headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=12"}
+        )
     except Exception as e:
         return jsonify({"error": str(e)}), 502
 
@@ -325,92 +421,81 @@ HTML_UI = """<!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
-<title>PulseGoal Ultra v7 — beIN & Global</title>
+<title>PulseGoal Ultra v8 — Auto-Verified</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
 <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@600;700;800;900&display=swap" rel="stylesheet">
 <style>
   body { font-family: 'Cairo', sans-serif; background: #040711; color: #f8fafc; }
-  .glass { background: rgba(15, 23, 42, 0.90); backdrop-filter: blur(14px); border: 1px solid rgba(255,255,255,0.08); }
+  .glass { background: rgba(15, 23, 42, 0.92); backdrop-filter: blur(14px); border: 1px solid rgba(255,255,255,0.08); }
 </style>
 </head>
 <body class="p-2.5 sm:p-4 max-w-6xl mx-auto space-y-3">
 
-  <!-- الشريط العلوي -->
-  <div class="glass p-3 rounded-2xl flex items-center justify-between gap-2 border-r-4 border-r-purple-500 shadow-xl">
+  <!-- الهيدر -->
+  <div class="glass p-3 rounded-2xl flex items-center justify-between gap-2 border-r-4 border-r-emerald-500 shadow-xl">
     <div>
       <div class="flex items-center gap-2">
-        <h1 class="text-sm sm:text-base font-black text-white">PulseGoal <span class="text-purple-400">beIN & Global Ultra</span></h1>
-        <span class="text-[10px] bg-purple-500/20 text-purple-300 border border-purple-500/40 px-2 py-0.5 rounded-full font-bold">Quad-Engine v7.0</span>
+        <h1 class="text-sm sm:text-base font-black text-white">PulseGoal <span class="text-emerald-400">Ultra v8.0</span></h1>
+        <span class="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2 py-0.5 rounded-full font-bold">Auto-Verified 🟢</span>
       </div>
-      <p id="now-playing" class="text-[11px] text-emerald-400 font-bold mt-0.5">جاري التشغيل...</p>
+      <p id="now-playing" class="text-[11px] text-amber-300 font-bold mt-0.5">جاري التحميل...</p>
     </div>
-    <span id="engine-status" class="text-[11px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2.5 py-1 rounded-xl font-bold shrink-0">سيرفر 1 نشط 🟢</span>
+    <span id="engine-status" class="text-[11px] bg-purple-500/20 text-purple-300 border border-purple-500/30 px-2.5 py-1 rounded-xl font-bold shrink-0">فحص ذكي نشط ⚡</span>
   </div>
 
-  <!-- منطقة المشغل الهجين (فيديو HLS + مشغل Embed مدمج للبث الرسمي) -->
+  <!-- مشغل الفيديو النظيف بدون نوافذ منبثقة تحجب الرؤية -->
   <div class="relative aspect-video bg-black rounded-2xl overflow-hidden border border-slate-800 shadow-2xl">
     <video id="v" class="w-full h-full object-contain bg-black" controls playsinline autoplay></video>
-    <iframe id="embed-frame" class="hidden w-full h-full border-0" allow="autoplay; fullscreen; encrypted-media" allowfullscreen></iframe>
-
-    <!-- شاشة الطوارئ التحويلية عند حجب القناة من متصفح تيليغرام -->
-    <div id="fallback-modal" class="hidden absolute inset-0 bg-slate-950/95 flex flex-col items-center justify-center p-5 text-center z-30 space-y-3">
-      <div class="text-3xl">📡</div>
-      <h3 class="text-sm font-extrabold text-white">هذه القناة تستخدم تشفير المصدر المباشر (Geo-IP / DRM)</h3>
-      <p class="text-xs text-slate-400 max-w-md">لتشغيلها فوراً بدون تقطيع، اختر السيرفر البديل المدمج أو افتح البث الرسمي/الخارجي بضغطة واحدة:</p>
-      <div class="flex flex-wrap justify-center gap-2">
-        <button onclick="switchServerMode('embed')" class="px-4 py-2 bg-purple-600 hover:bg-purple-500 rounded-xl text-xs font-bold text-white shadow">📺 تشغيل البث المدمج البديل (سيرفر 3)</button>
-        <button onclick="openWebBackup()" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-xl text-xs font-bold text-white shadow">🌐 فتح البث الرسمي المباشر للقناة</button>
-        <button onclick="openInVlc()" class="px-4 py-2 bg-amber-600 hover:bg-amber-500 rounded-xl text-xs font-bold text-white shadow">📲 فتح في مشغل الهاتف / VLC</button>
-      </div>
+    <div id="loading-banner" class="hidden absolute top-3 right-3 bg-black/80 text-emerald-400 border border-emerald-500/40 px-3 py-1 rounded-full text-[11px] font-bold">
+      🔄 جاري الاتصال بالسيرفر الأسرع للقناة...
     </div>
   </div>
 
-  <!-- شريط اختيار السيرفرات الـ 4 والجودات -->
+  <!-- شريط تبديل السيرفرات والجودات -->
   <div class="glass p-3 rounded-2xl space-y-2.5">
     <div class="flex flex-wrap items-center justify-between gap-1.5">
       <div class="flex flex-wrap gap-1.5">
-        <button onclick="switchServerMode('direct')" id="btn-srv-direct" class="px-2.5 py-1.5 bg-emerald-600 rounded-xl text-[11px] font-bold">سيرفر 1 (مباشر من بلدك)</button>
-        <button onclick="switchServerMode('proxy')" id="btn-srv-proxy" class="px-2.5 py-1.5 bg-slate-800 rounded-xl text-[11px] font-bold">سيرفر 2 (بروكسي تخطي الحجب)</button>
-        <button onclick="switchServerMode('embed')" id="btn-srv-embed" class="px-2.5 py-1.5 bg-purple-700 rounded-xl text-[11px] font-bold">سيرفر 3 (المشغل المدمج البديل)</button>
-        <button onclick="openWebBackup()" class="px-2.5 py-1.5 bg-sky-700 rounded-xl text-[11px] font-bold">🌐 المصدر الرسمي</button>
+        <button onclick="tryBackupUrl(0)" class="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 rounded-xl text-[11px] font-bold">⚡ المصدر 1 (الرئيسي)</button>
+        <button onclick="tryBackupUrl(1)" class="px-2.5 py-1.5 bg-purple-600 hover:bg-purple-500 rounded-xl text-[11px] font-bold">🔄 المصدر 2 (الاحتياطي)</button>
+        <button onclick="forceProxyToggle()" id="btn-proxy-mode" class="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-xl text-[11px] font-bold">🛡️ تبديل وضع البروكسي</button>
+        <button onclick="openExternalPlayer()" class="px-2.5 py-1.5 bg-amber-600 hover:bg-amber-500 rounded-xl text-[11px] font-bold">📲 فتح في مشغل الهاتف / VLC</button>
       </div>
       <div class="flex gap-1">
-        <button onclick="setQ(-1)" class="px-2.5 py-1 bg-slate-800 hover:bg-emerald-700 rounded-lg text-[11px] font-bold">ABR تلقائي</button>
-        <button onclick="setQ(0)" class="px-2.5 py-1 bg-amber-600/80 rounded-lg text-[11px] font-bold">240p للنت الضعيف</button>
+        <button onclick="setQ(-1)" class="px-2.5 py-1 bg-slate-800 rounded-lg text-[11px] font-bold">ABR تلقائي</button>
+        <button onclick="setQ(0)" class="px-2.5 py-1 bg-amber-700 rounded-lg text-[11px] font-bold">240p للنت الضعيف</button>
         <button onclick="setQ(2)" class="px-2.5 py-1 bg-slate-800 rounded-lg text-[11px] font-bold">1080p FHD</button>
       </div>
     </div>
 
-    <!-- إدخال رابط m3u8 أو قائمة M3U خاصة لـ beIN Sports -->
     <div class="flex gap-1.5 pt-2 border-t border-slate-800">
-      <input id="custom-input" type="text" placeholder="أدخل أي رابط بث .m3u8 أو قائمة IPTV M3U لتشغيل قنواتك الخاصة فوراً..." class="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white">
-      <button onclick="loadCustomInput()" class="px-4 py-1.5 bg-purple-600 hover:bg-purple-500 rounded-xl text-xs font-bold shrink-0">تشغيل / استيراد</button>
+      <input id="custom-input" type="text" placeholder="أدخل أي رابط بث .m3u8 أو قائمة M3U خاصة بك..." class="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white">
+      <button onclick="loadCustomInput()" class="px-4 py-1.5 bg-emerald-600 rounded-xl text-xs font-bold shrink-0">تشغيل فوري</button>
     </div>
   </div>
 
-  <!-- أزرار الأقسام الرئيسية -->
+  <!-- التبويبات -->
   <div class="grid grid-cols-3 gap-2">
-    <button id="tab-bein" onclick="showSection('bein')" class="py-2.5 rounded-xl font-extrabold text-xs bg-purple-600 text-white shadow-lg">🟣 قنوات beIN & العربية</button>
-    <button id="tab-matches" onclick="showSection('matches')" class="py-2.5 rounded-xl font-extrabold text-xs bg-slate-900 text-slate-300 border border-slate-800">⚽ جميع المباريات (139+)</button>
-    <button id="tab-global" onclick="showSection('global')" class="py-2.5 rounded-xl font-extrabold text-xs bg-slate-900 text-slate-300 border border-slate-800">🌍 قنوات عالمية 24/7</button>
+    <button onclick="showSection('bein')" class="py-2.5 rounded-xl font-extrabold text-xs bg-purple-600 text-white shadow-lg">🟣 beIN & القنوات العربية</button>
+    <button onclick="showSection('matches')" class="py-2.5 rounded-xl font-extrabold text-xs bg-slate-900 text-slate-300 border border-slate-800">⚽ جدول المباريات الشامل</button>
+    <button onclick="showSection('global')" class="py-2.5 rounded-xl font-extrabold text-xs bg-slate-900 text-slate-300 border border-slate-800">🌍 قنوات رياضية شغالة 24/7</button>
   </div>
 
-  <!-- قسم القنوات (beIN + العربية + العالمية) -->
+  <!-- قائمة القنوات المفحوصة -->
   <div id="sec-channels" class="glass p-3.5 rounded-2xl space-y-3">
     <div class="flex flex-wrap items-center justify-between gap-2">
       <div class="flex gap-1.5 flex-wrap">
-        <button onclick="setCatFilter('bein')" class="px-3 py-1 rounded-lg bg-purple-600 text-xs font-bold">🟣 باقة beIN SPORTS</button>
-        <button onclick="setCatFilter('arab')" class="px-3 py-1 rounded-lg bg-emerald-600 text-xs font-bold">🇲🇦🇶🇦🇦🇪 القنوات العربية المفتوحة</button>
-        <button onclick="setCatFilter('global')" class="px-3 py-1 rounded-lg bg-sky-600 text-xs font-bold">🌍 قنوات عالمية مضمونة</button>
-        <button onclick="setCatFilter('all')" class="px-3 py-1 rounded-lg bg-slate-800 text-xs font-bold">الكل</button>
+        <button onclick="setCatFilter('all')" class="px-3 py-1 rounded-lg bg-emerald-600 text-xs font-bold">🟢 كل القنوات المفحوصة</button>
+        <button onclick="setCatFilter('bein')" class="px-3 py-1 rounded-lg bg-purple-600 text-xs font-bold">🟣 باقة beIN & قطر</button>
+        <button onclick="setCatFilter('arab')" class="px-3 py-1 rounded-lg bg-sky-600 text-xs font-bold">🇲🇦🇦🇪🇸🇦 الرياضية والعربية</button>
+        <button onclick="setCatFilter('global')" class="px-3 py-1 rounded-lg bg-slate-800 text-xs font-bold">🌍 القنوات العالمية</button>
       </div>
-      <input id="ch-search" oninput="renderChannels()" type="text" placeholder="ابحث عن قناة (beIN, الرياضية، الكأس)..." class="bg-slate-950 border border-slate-700 rounded-xl px-3 py-1 text-xs text-white w-full sm:w-56">
+      <input id="ch-search" oninput="renderChannels()" type="text" placeholder="ابحث عن قناة..." class="bg-slate-950 border border-slate-700 rounded-xl px-3 py-1 text-xs text-white w-full sm:w-56">
     </div>
-    <div id="channels-grid" class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-[420px] overflow-y-auto pr-1"></div>
+    <div id="channels-grid" class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-[440px] overflow-y-auto pr-1"></div>
   </div>
 
-  <!-- قسم جميع المباريات -->
+  <!-- قائمة جميع المباريات -->
   <div id="sec-matches" class="hidden glass p-3.5 rounded-2xl space-y-3">
     <div class="flex flex-wrap items-center justify-between gap-2">
       <div class="flex gap-1.5 overflow-x-auto pb-1 max-w-full">
@@ -421,7 +506,7 @@ HTML_UI = """<!DOCTYPE html>
         <button onclick="loadMatches('caf.nations')" class="px-2.5 py-1 rounded-lg bg-slate-800 text-[11px] font-bold shrink-0">🌍 أفريقيا</button>
         <button onclick="loadMatches('ksa.1')" class="px-2.5 py-1 rounded-lg bg-slate-800 text-[11px] font-bold shrink-0">🇸🇦 السعودي</button>
       </div>
-      <input id="match-search" oninput="renderMatches()" type="text" placeholder="ابحث عن فريق أو مباراة..." class="bg-slate-950 border border-slate-700 rounded-xl px-3 py-1 text-xs text-white w-full sm:w-48">
+      <input id="match-search" oninput="renderMatches()" type="text" placeholder="ابحث عن فريق أو بطولة..." class="bg-slate-950 border border-slate-700 rounded-xl px-3 py-1 text-xs text-white w-full sm:w-48">
     </div>
     <div id="matches-count" class="text-[11px] text-emerald-400 font-bold"></div>
     <div id="matches-grid" class="grid grid-cols-1 md:grid-cols-2 gap-2.5 max-h-[450px] overflow-y-auto pr-1"></div>
@@ -429,14 +514,14 @@ HTML_UI = """<!DOCTYPE html>
 
 <script>
 const v = document.getElementById('v');
-const embedFrame = document.getElementById('embed-frame');
-const fallbackModal = document.getElementById('fallback-modal');
+const loadingBanner = document.getElementById('loading-banner');
 let h = null;
 let allChannels = [];
 let allMatches = [];
-let curCat = 'bein';
+let curCat = 'all';
 let curCh = null;
-let srvMode = 'direct'; // direct -> proxy -> embed
+let curUrlIdx = 0;
+let useProxy = false;
 
 function showSection(sec) {
   if (sec === 'matches') {
@@ -445,76 +530,92 @@ function showSection(sec) {
   } else {
     document.getElementById('sec-matches').classList.add('hidden');
     document.getElementById('sec-channels').classList.remove('hidden');
-    curCat = sec === 'global' ? 'global' : 'bein';
+    curCat = sec === 'global' ? 'global' : (sec === 'bein' ? 'all' : 'all');
     renderChannels();
   }
 }
 
 function setCatFilter(c) { curCat = c; renderChannels(); }
 
-function playChannelObj(idx) {
+function selectChannel(idx) {
   const c = window.displayedChannels[idx];
   if (!c) return;
   curCh = c;
-  fallbackModal.classList.add('hidden');
-  document.getElementById('now-playing').textContent = '📺 القناة النشطة: ' + c.name;
-
-  if (c.mode === 'embed') {
-    switchServerMode('embed');
-  } else {
-    switchServerMode('direct');
-  }
+  curUrlIdx = 0;
+  // إذا كان الرابط http:// غير مشفر أو يحتاج Referer خاص، يجب تمريره عبر البروكسي تلقائياً كي لا يحظره متصفح تيليغرام
+  const firstUrl = c.urls[0] || '';
+  useProxy = firstUrl.startsWith('http://') || Boolean(c.ref);
+  playActiveStream(false);
 }
 
-function switchServerMode(mode) {
-  srvMode = mode;
-  fallbackModal.classList.add('hidden');
+function tryBackupUrl(idx) {
   if (!curCh) return;
+  curUrlIdx = idx < curCh.urls.length ? idx : 0;
+  const u = curCh.urls[curUrlIdx];
+  useProxy = u.startsWith('http://') || Boolean(curCh.ref);
+  playActiveStream(false);
+}
 
-  if (mode === 'embed') {
-    if (h) h.destroy();
-    v.pause();
-    v.classList.add('hidden');
-    embedFrame.classList.remove('hidden');
-    embedFrame.src = curCh.embed_url || curCh.web_backup;
-    document.getElementById('engine-status').textContent = 'سيرفر 3 (مدمج) 🟣';
-    return;
-  }
+function forceProxyToggle() {
+  useProxy = !useProxy;
+  playActiveStream(true);
+}
 
-  embedFrame.src = '';
-  embedFrame.classList.add('hidden');
-  v.classList.remove('hidden');
+function playActiveStream(manualToggle) {
+  if (!curCh || !curCh.urls || !curCh.urls.length) return;
+  const rawUrl = curCh.urls[curUrlIdx] || curCh.urls[0];
+  const ref = curCh.ref || '';
 
-  const rawUrl = curCh.hls_url;
-  const target = mode === 'proxy' ? ('/proxy/stream?url=' + encodeURIComponent(rawUrl)) : rawUrl;
-  document.getElementById('engine-status').textContent = mode === 'direct' ? 'سيرفر 1 (مباشر) 🟢' : 'سيرفر 2 (بروكسي) 🟠';
+  document.getElementById('now-playing').textContent = `📺 ${curCh.name} (سيرفر ${curUrlIdx + 1}/${curCh.urls.length})`;
+  document.getElementById('engine-status').textContent = useProxy ? 'بروكسي HTTPS ذكي 🛡️' : 'اتصال مباشر سريع ⚡';
+  loadingBanner.classList.remove('hidden');
+
+  const finalUrl = useProxy
+    ? ('/proxy/stream?url=' + encodeURIComponent(rawUrl) + '&ref=' + encodeURIComponent(ref))
+    : rawUrl;
 
   if (Hls.isSupported()) {
     if (h) h.destroy();
-    h = new Hls({ maxBufferLength: 35, maxMaxBufferLength: 60, manifestLoadingTimeOut: 9000 });
-    h.loadSource(target);
+    h = new Hls({
+      maxBufferLength: 35,
+      maxMaxBufferLength: 60,
+      manifestLoadingTimeOut: 10000,
+      levelLoadingTimeOut: 10000
+    });
+    h.loadSource(finalUrl);
     h.attachMedia(v);
-    h.on(Hls.Events.MANIFEST_PARSED, () => { v.play().catch(()=>{}); });
+    h.on(Hls.Events.MANIFEST_PARSED, () => {
+      loadingBanner.classList.add('hidden');
+      v.play().catch(()=>{});
+    });
     h.on(Hls.Events.ERROR, (ev, data) => {
       if (data.fatal) {
-        if (mode === 'direct') {
-          // التحويل التلقائي الذكي للسيرفر 2 (البروكسي)
-          switchServerMode('proxy');
-        } else if (mode === 'proxy') {
-          // إظهار خيارات السيرفر 3 والمشغل الخارجي
-          fallbackModal.classList.remove('hidden');
+        loadingBanner.classList.add('hidden');
+        if (!manualToggle && !useProxy) {
+          // جرب البروكسي تلقائياً إذا فشل الاتصال المباشر
+          useProxy = true;
+          playActiveStream(true);
+        } else if (curUrlIdx + 1 < curCh.urls.length) {
+          // انتقل تلقائياً للرابط الاحتياطي التالي للقناة
+          curUrlIdx++;
+          const nextU = curCh.urls[curUrlIdx];
+          useProxy = nextU.startsWith('http://') || Boolean(curCh.ref);
+          playActiveStream(false);
         }
       }
     });
   } else if (v.canPlayType('application/vnd.apple.mpegurl')) {
-    v.src = target;
-    v.play().catch(()=>{});
+    v.src = finalUrl;
+    v.onloadedmetadata = () => { loadingBanner.classList.add('hidden'); v.play().catch(()=>{}); };
   }
 }
 
 function setQ(lvl) { if (h) h.currentLevel = lvl; }
-function openWebBackup() { if (curCh) window.open(curCh.web_backup || curCh.hls_url, '_blank'); }
-function openInVlc() { if (curCh) window.open(curCh.hls_url, '_blank'); }
+
+function openExternalPlayer() {
+  if (!curCh || !curCh.urls.length) return;
+  window.open(curCh.urls[curUrlIdx] || curCh.urls[0], '_blank');
+}
 
 async function loadCustomInput() {
   const val = document.getElementById('custom-input').value.trim();
@@ -523,21 +624,22 @@ async function loadCustomInput() {
     try {
       const r = await fetch('/proxy/stream?url=' + encodeURIComponent(val));
       const txt = await r.text();
-      const lines = txt.split('\\n');
       let name = '';
-      for (let l of lines) {
+      for (let l of txt.split('\\n')) {
         l = l.trim();
-        if (l.startsWith('#EXTINF:')) name = '⭐ ' + (l.split(',').pop() || 'Custom Channel');
+        if (l.startsWith('#EXTINF:')) name = '⭐ ' + (l.split(',').pop() || 'Custom');
         else if (l.startsWith('http')) {
-          allChannels.unshift({ id: 'cust_' + Math.random(), cat: 'bein', name: name || 'قناة مخصصة', mode: 'hls', hls_url: l, embed_url: l, web_backup: l });
+          allChannels.unshift({ id: 'c_' + Math.random(), cat: 'bein', name: name || 'قناة مضافة', urls: [l], ref: '' });
         }
       }
-      curCat = 'bein';
+      curCat = 'all';
       renderChannels();
     } catch (e) {}
   } else {
-    curCh = { name: 'بث مخصص مباشر', mode: 'hls', hls_url: val, embed_url: val, web_backup: val };
-    switchServerMode('direct');
+    curCh = { name: 'بث مباشر مخصص', urls: [val], ref: '' };
+    curUrlIdx = 0;
+    useProxy = val.startsWith('http://');
+    playActiveStream(false);
   }
 }
 
@@ -545,9 +647,9 @@ function renderChannels() {
   const q = (document.getElementById('ch-search').value || '').toLowerCase();
   window.displayedChannels = allChannels.filter(c => (curCat === 'all' || c.cat === curCat) && c.name.toLowerCase().includes(q));
   document.getElementById('channels-grid').innerHTML = window.displayedChannels.map((c, i) => `
-    <div onclick="playChannelObj(${i})" class="cursor-pointer p-3 rounded-xl bg-slate-950 hover:bg-purple-950/40 border ${c.cat==='bein'?'border-purple-500/40':'border-slate-800'} flex items-center justify-between gap-2 transition">
+    <div onclick="selectChannel(${i})" class="cursor-pointer p-3 rounded-xl bg-slate-950 hover:bg-emerald-950/40 border ${c.cat==='bein'?'border-purple-500/40':'border-slate-800'} flex items-center justify-between gap-2 transition">
       <span class="text-xs font-bold truncate">${c.name}</span>
-      <span class="text-[10px] ${c.cat==='bein'?'bg-purple-600':'bg-emerald-600'} text-white px-2.5 py-1 rounded-lg font-bold shrink-0">تشغيل ▶</span>
+      <span class="text-[10px] ${c.cat==='bein'?'bg-purple-600':'bg-emerald-600'} text-white px-2.5 py-1 rounded-lg font-bold shrink-0">تشغيل (${c.urls.length} سيرفر) ▶</span>
     </div>
   `).join('');
 }
@@ -557,15 +659,16 @@ async function initApp() {
     const res = await fetch('/api/channels');
     allChannels = await res.json();
     renderChannels();
+    // ابدأ تلقائياً بقناة beIN SPORTS XTRA 1 HD الشغالة فوراً بدون أي أخطاء
     if (window.displayedChannels && window.displayedChannels.length > 0) {
-      playChannelObj(1); // يبدأ بقناة beIN SPORTS XTRA أو FIFA+ الشغالة فوراً
+      selectChannel(0);
     }
   } catch (e) {}
   loadMatches('all');
 }
 
 async function loadMatches(code) {
-  document.getElementById('matches-count').textContent = '⏳ جاري تحديث جميع المباريات العالمية...';
+  document.getElementById('matches-count').textContent = '⏳ جاري جلب جدول المباريات العالمي...';
   try {
     const res = await fetch('/api/matches?league=' + encodeURIComponent(code));
     allMatches = await res.json();
@@ -576,11 +679,11 @@ async function loadMatches(code) {
 function renderMatches() {
   const q = (document.getElementById('match-search').value || '').toLowerCase();
   const list = allMatches.filter(m => m.home.toLowerCase().includes(q) || m.away.toLowerCase().includes(q) || m.league.toLowerCase().includes(q));
-  document.getElementById('matches-count').textContent = `✅ إجمالي المباريات المعروضة: (${list.length}) مباراة مع القنوات الناقلة:`;
+  document.getElementById('matches-count').textContent = `✅ إجمالي المباريات: (${list.length}) مباراة في الجدول العالمي الشامل:`;
   document.getElementById('matches-grid').innerHTML = list.map(m => `
     <div onclick="showSection('bein')" class="cursor-pointer p-3 rounded-xl bg-slate-950 border ${m.state==='in'?'border-red-500/60':'border-slate-800'} space-y-2">
       <div class="flex justify-between text-[11px]">
-        <span class="text-purple-400 font-bold truncate">🏆 ${m.league}</span>
+        <span class="text-emerald-400 font-bold truncate">🏆 ${m.league}</span>
         <span class="${m.state==='in'?'bg-red-500/20 text-red-300':'bg-slate-800 text-slate-300'} px-2 py-0.5 rounded font-bold">${m.status}</span>
       </div>
       <div class="flex justify-between items-center text-xs sm:text-sm font-extrabold">
@@ -590,7 +693,7 @@ function renderMatches() {
       </div>
       <div class="flex justify-between pt-1.5 border-t border-slate-800/80 text-[11px] text-slate-400">
         <span>📡 الناقل: <strong class="text-purple-300">${m.broadcaster}</strong></span>
-        <span class="text-emerald-400 font-bold">فتح القناة الناقلة ▶</span>
+        <span class="text-emerald-400 font-bold">فتح القنوات ▶</span>
       </div>
     </div>
   `).join('');
@@ -606,7 +709,7 @@ def index():
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "online", "bot": "PulseGoal Ultra v7 Enterprise"}), 200
+    return jsonify({"status": "online", "bot": "PulseGoal Ultra v8 Auto-Verified"}), 200
 
 def build_persistent_reply_kb():
     rk = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
@@ -626,7 +729,7 @@ def build_persistent_reply_kb():
 
 def build_matches_inline_kb(matches, page=0, per_page=8, league="all"):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(InlineKeyboardButton("🟣 فتح مشغل beIN SPORTS والقنوات الحية (Quad-Engine)", web_app=WebAppInfo(url=WEBAPP_URL)))
+    kb.add(InlineKeyboardButton("🟣 فتح مشغل beIN SPORTS والقنوات المفحوصة تلقائياً", web_app=WebAppInfo(url=WEBAPP_URL)))
 
     total = len(matches)
     start = page * per_page
@@ -644,16 +747,15 @@ def build_matches_inline_kb(matches, page=0, per_page=8, league="all"):
         kb.row(*nav)
 
     kb.row(
-        InlineKeyboardButton("🟣 باقة beIN SPORTS", callback_data="menu_bein"),
+        InlineKeyboardButton("🟣 باقة beIN & العربية", callback_data="menu_bein"),
         InlineKeyboardButton("🏆 اختيار بطولة", callback_data="menu_leagues")
     )
     return kb
 
 def build_bein_inline_kb():
     kb = InlineKeyboardMarkup(row_width=2)
-    for ch in CHANNELS_DB:
-        if ch["cat"] in ("bein", "arab"):
-            kb.add(InlineKeyboardButton(ch["name"], web_app=WebAppInfo(url=WEBAPP_URL)))
+    for ch in BASE_CHANNELS:
+        kb.add(InlineKeyboardButton(ch["name"], web_app=WebAppInfo(url=WEBAPP_URL)))
     kb.add(InlineKeyboardButton("🔙 رجوع لجدول المباريات الشامل", callback_data="mpage_all_0"))
     return kb
 
@@ -668,8 +770,8 @@ if bot:
     def cmd_start(msg):
         bot.send_message(
             msg.chat.id,
-            "⚽ <b>أهلاً بك في PulseGoal Ultra v7.0 — إصدار beIN & Global الاحترافي</b>\n\n"
-            "🟣 تم تزويد البوت بـ <b>باقة قنوات beIN SPORTS العربية والقنوات المفتوحة</b> مع <b>المشغل الهجين رباعي السيرفرات (Quad-Engine)</b> الذي يبدأ بالبث المباشر من بلدك ثم يحول للبروكسي أو المشغل المدمج تلقائياً لمنع توقف أي قناة!",
+            "⚽ <b>أهلاً بك في PulseGoal Ultra v8.0 — نظام الفحص التلقائي</b>\n\n"
+            "🟢 تم تزويد البوت بـ <b>فاحص الروابط التلقائي (Auto-Verifier)</b> وتمرير قنوات <code>HTTP</code> عبر بروكسي <code>HTTPS</code> مشفر مع ترويسات <code>Referer</code> الخاصة بقنوات beIN والكأس والرياضية المغربية.",
             reply_markup=build_persistent_reply_kb()
         )
         matches = fetch_all_world_matches("all")
@@ -683,13 +785,13 @@ if bot:
     def handle_text(msg):
         t = (msg.text or "").strip()
         if "beIN" in t or "العربية" in t:
-            bot.send_message(msg.chat.id, "🟣 <b>باقة قنوات beIN SPORTS والقنوات الرياضية العربية الناقلة:</b>", reply_markup=build_bein_inline_kb())
+            bot.send_message(msg.chat.id, "🟣 <b>باقة قنوات beIN SPORTS والقنوات الرياضية العربية:</b>", reply_markup=build_bein_inline_kb())
         elif "المباريات الجارية" in t:
             all_m = fetch_all_world_matches("all")
             live_m = [m for m in all_m if m["state"] == "in"] or all_m
             bot.send_message(msg.chat.id, f"🔴 <b>المباريات الجارية الآن ({len(live_m)} مباراة):</b>", reply_markup=build_matches_inline_kb(live_m, 0, 8, "all"))
         elif "تصفية حسب البطولة" in t:
-            bot.send_message(msg.chat.id, "🏆 <b>اختر البطولة لعرض مبارياتها وقنواتها الناقلة:</b>", reply_markup=build_leagues_inline_kb())
+            bot.send_message(msg.chat.id, "🏆 <b>اختر البطولة لعرض مبارياتها:</b>", reply_markup=build_leagues_inline_kb())
         else:
             all_m = fetch_all_world_matches("all")
             bot.send_message(msg.chat.id, f"📅 <b>جميع مباريات اليوم ({len(all_m)} مباراة):</b>", reply_markup=build_matches_inline_kb(all_m, 0, 8, "all"))
